@@ -380,7 +380,7 @@ def drawer_variant_agg(env_policy: AiroaBasePolicy, ckpt_path: str, num_trials: 
         robot_init_rot_rpy_range=[0, 0, 1, 0, 0, 1, 0.0, 0.0, 1],
         obj_init_x_range=[0, 0, 1],
         obj_init_y_range=[0, 0, 1],
-        task_name="fractal_drawer_visual_matching",
+        task_name="fractal_drawer_variant_agg",
     )
 
     background_scenes = ["frl_apartment_stage_simple", "modern_bedroom_no_roof", "modern_office_no_roof"]

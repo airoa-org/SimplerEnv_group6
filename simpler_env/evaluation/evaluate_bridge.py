@@ -4,6 +4,13 @@ from ..policies.base import AiroaBasePolicy
 from .config import ManiSkill2Config
 from .evaluate import _run_single_evaluation, calculate_robust_score
 
+# env_name → task_name の対応表
+ENV_TO_TASK: Dict[str, str] = {
+    "PutSpoonOnTableClothInScene-v0": "widowx_spoon_on_towel",
+    "PutCarrotOnPlateInScene-v0": "widowx_carrot_on_plate",
+    "StackGreenCubeOnYellowCubeBakedTexInScene-v0": "widowx_stack_cube",
+    "PutEggplantInBasketScene-v0": "widowx_put_eggplant_in_basket",
+}
 
 def bridge(env_policy: AiroaBasePolicy, ckpt_path: str) -> List[List[bool]]:
     """
@@ -35,10 +42,12 @@ def bridge(env_policy: AiroaBasePolicy, ckpt_path: str) -> List[List[bool]]:
         ("PutSpoonOnTableClothInScene-v0", "bridge_table_1_v1"),
     ]
     for env_name, scene_name in envs_v1:
+        task_name = ENV_TO_TASK.get(env_name)
         cfg = ManiSkill2Config(
             **common_v1,
             env_name=env_name,
             scene_name=scene_name,
+            task_name=task_name,
         )
         results.append(_run_single_evaluation(env_policy, cfg, ckpt_path))
 
@@ -60,6 +69,7 @@ def bridge(env_policy: AiroaBasePolicy, ckpt_path: str) -> List[List[bool]]:
         robot_init_rot_quat_center=[0, 0, 0, 1],
         robot_init_rot_rpy_range=[0, 0, 1, 0, 0, 1, 0, 0, 1],
         ckpt_path=ckpt_path,
+        task_name=ENV_TO_TASK["PutEggplantInBasketScene-v0"],  # v2 はバスケット固定
     )
     results.append(_run_single_evaluation(env_policy, cfg_v2, ckpt_path))
 

@@ -8,9 +8,10 @@ from PIL import Image
 import torch
 import cv2 as cv
 from simpler_env.utils.action.action_ensemble import ActionEnsembler
-from .geometry import quat2mat, mat2euler
+from .geometry import quat2mat, mat2euler, euler2axangle
 import numpy as np
 import torch
+from scipy.spatial.transform import Rotation as R
 
 from gr00t.eval.robot import RobotInferenceClient
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
@@ -33,16 +34,18 @@ class Gr00tInference:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         if policy_setup == "widowx_bridge":
             action_ensemble = False
-            data_config = "bridge"
+            data_config = "widowx" # widowx, widowx_chunk1
             image_size = [256, 256]
             self.sticky_gripper_num_repeat = 1
             # EE pose in Bridge data was relative to a top-down pose, instead of robot base
             self.default_rot = np.array([[0, 0, 1.0], [0, 1.0, 0], [-1.0, 0, 0]])  # https://github.com/rail-berkeley/bridge_data_robot/blob/b841131ecd512bafb303075bd8f8b677e0bf9f1f/widowx_envs/widowx_controller/src/widowx_controller/widowx_controller.py#L203
+            embodiment_tag = "widowx"
         elif policy_setup == "google_robot":
-            data_config = "fractal"
+            data_config = "google_robot" # google_robot, google_robot_chunk1
             action_ensemble = False
             image_size = [320, 256]
             self.sticky_gripper_num_repeat = 10
+            embodiment_tag = "google_robot"
         else:
             raise NotImplementedError(
                 f"Policy setup {policy_setup} not supported for octo models. The other datasets can be found in the huggingface config.json file."
@@ -58,9 +61,9 @@ class Gr00tInference:
                 model_path=saved_model_path,
                 modality_config=modality_config,
                 modality_transform=transforms,
-                embodiment_tag="new_embodiment",
+                embodiment_tag=embodiment_tag, #embodiment_tag or "gr1
                 device="cuda",
-                denoising_steps=16
+                denoising_steps=4
             )
 
         self.image_size = image_size
@@ -113,7 +116,6 @@ class Gr00tInference:
             [
                 proprio[:3],
                 rpy_bridge_converted,
-                np.zeros(1),
                 [gripper_openness],
             ]
         )
@@ -125,6 +127,15 @@ class Gr00tInference:
         """
         # StateEncoding.POS_QUAT: xyz + q_xyzw + gripper(closeness)
         quat_xyzw = np.roll(eef_pos[3:7], -1)
+        # クォータニオン -> オイラー角変換
+        norm = np.linalg.norm(quat_xyzw)
+        if norm > 1e-12:
+            quat = quat_xyzw  / norm
+        else:
+            quat = np.array([0,0,0,1], dtype=np.float32)
+
+        rot = R.from_quat(quat)
+        rpy = rot.as_euler('yxz', degrees=False) # roll, pitch, yaw（yxz）
         gripper_width = eef_pos[
             7
         ]  # from simpler, 0 for close, 1 for open
@@ -135,7 +146,7 @@ class Gr00tInference:
         raw_proprio = np.concatenate(
             (
                 eef_pos[:3],
-                quat_xyzw,
+                rpy,
                 [gripper_closedness],
             )
         )
@@ -170,57 +181,78 @@ class Gr00tInference:
             state = self.preprocess_widowx_proprio(eef_pos)
             batch = {
                 "video.image_0": np.array(images[0][None]), # numpy (b h w c)
-                "state.x": state[0:1][None],
-                "state.y": state[1:2][None],
-                "state.z": state[2:3][None],
-                "state.roll": state[3:4][None],
-                "state.pitch": state[4:5][None],
-                "state.yaw": state[5:6][None],
-                "state.pad": state[6:7][None],
-                "state.gripper": state[7:8][None],
+                "state.ee_pos": state[0:3][None],
+                "state.ee_rot": state[3:6][None],
+                "state.gripper": state[6:7][None],
                 "annotation.human.action.task_description": [task_description],
             }
             if not self.action_plan:
                 actions = self.policy_client.get_action(batch)
-                action_chunk = np.stack([
-                    actions["action.x"],
-                    actions["action.y"],
-                    actions["action.z"],
-                    actions["action.roll"],
-                    actions["action.pitch"],
-                    actions["action.yaw"],
-                    actions["action.gripper"],
-                ], axis=-1)[:self.pred_action_horizon]
+                delta_pos = np.asarray(actions["action.delta_ee_pos"])
+                delta_rot = np.asarray(actions["action.delta_ee_rot"])
+                gripper = np.asarray(actions["action.gripper"])
+
+                # (H,) -> (H,1)
+                if gripper.ndim == 1:
+                    gripper = gripper[:, None]
+                elif gripper.ndim == 2 and gripper.shape[1] != 1:
+                    # 形が (1,H) の場合を想定
+                    if gripper.shape[0] == 1:
+                        gripper = gripper.T
+                    if gripper.shape[1] != 1:
+                        gripper = gripper.reshape(-1, 1)
+
+                # 0~1にクリップ
+                gripper = np.clip(gripper, 0.0, 1.0)
+                # 二値化
+                gripper = (gripper > 0.5).astype(np.float32)
+
+                action_chunk_size = min(len(delta_pos), len(delta_rot), len(gripper))
+                action_chunk = np.concatenate([delta_pos[:action_chunk_size], delta_rot[:action_chunk_size], gripper[:action_chunk_size]], axis=-1)
                 self.action_plan.extend(action_chunk)
 
         elif self.policy_setup == "google_robot":
             state = self.preprocess_google_robot_proprio(eef_pos)
             batch = {
                 "video.image": np.array(images[0][None]),
-                "state.x": state[0:1][None],
-                "state.y": state[1:2][None],
-                "state.z": state[2:3][None],
-                "state.rx": state[3:4][None],
-                "state.ry": state[4:5][None],
-                "state.rz": state[5:6][None],
-                "state.rw": state[6:7][None],
-                "state.gripper": state[7:8][None],
+                "state.ee_pos": state[0:3][None],
+                "state.ee_rot": state[3:6][None],
+                "state.gripper": state[6:7][None],
                 "annotation.human.action.task_description": [task_description],
             }
 
             if not self.action_plan:
                 actions = self.policy_client.get_action(batch)
-                raw_actions = np.stack([
-                    actions["action.x"],
-                    actions["action.y"],
-                    actions["action.z"],
-                    actions["action.roll"],
-                    actions["action.pitch"],
-                    actions["action.yaw"],
-                    actions["action.gripper"],
-                ], axis=-1)[:self.pred_action_horizon]
-                self.action_plan.extend(raw_actions)
-            
+                delta_pos = np.asarray(actions["action.delta_ee_pos"])
+                delta_rot = np.asarray(actions["action.delta_ee_rot"])
+                gripper = np.asarray(actions["action.gripper"])
+
+                # すべての配列を2次元にして次元を統一
+                if delta_pos.ndim == 1:
+                    delta_pos = delta_pos.reshape(1, -1)
+                if delta_rot.ndim == 1:
+                    delta_rot = delta_rot.reshape(1, -1)
+                
+                # gripperを確実に2次元配列 (H, 1) にする
+                if gripper.ndim == 0:
+                    # スカラー値の場合
+                    gripper = gripper.reshape(1, 1)
+                elif gripper.ndim == 1:
+                    # (H,) -> (H,1)
+                    gripper = gripper[:, None]
+                elif gripper.ndim == 2 and gripper.shape[1] != 1:
+                    # 形が (1,H) の場合を想定
+                    if gripper.shape[0] == 1:
+                        gripper = gripper.T
+                    if gripper.shape[1] != 1:
+                        gripper = gripper.reshape(-1, 1)
+
+                # 二値化
+                gripper = np.where(gripper < 0.5, 0.0, 1.0)
+                action_chunk_size = min(len(delta_pos), len(delta_rot), len(gripper))
+                action_chunk = np.concatenate([delta_pos[:action_chunk_size], delta_rot[:action_chunk_size], gripper[:action_chunk_size]], axis=-1)
+
+                self.action_plan.extend(action_chunk)
         raw_actions = self.action_plan.popleft()
 
 
