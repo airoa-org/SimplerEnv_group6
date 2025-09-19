@@ -63,7 +63,7 @@ class Gr00tInference:
                 modality_transform=transforms,
                 embodiment_tag=embodiment_tag, #embodiment_tag or "gr1
                 device="cuda",
-                denoising_steps=4
+                denoising_steps=16
             )
 
         self.image_size = image_size
