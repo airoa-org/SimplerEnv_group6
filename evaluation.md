@@ -37,7 +37,7 @@ python scripts/gr00t/evaluate_fractal.py --ckpt-path ./checkpoints/fractal_check
 例: `bridge_checkpoint-200000/` を配置していた場合
 
 ```bash
-python scripts/gr00t/evaluate_fractal.py --ckpt-path ./checkpoints/bridge_checkpoint-200000/
+python scripts/gr00t/evaluate_bridge.py --ckpt-path ./checkpoints/bridge_checkpoint-200000/
 ```
 
 ### 補足
