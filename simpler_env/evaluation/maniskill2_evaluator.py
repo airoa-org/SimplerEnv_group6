@@ -2,8 +2,8 @@
 Evaluate a model on ManiSkill2 environment.
 """
 
-import os
 import json
+import os
 
 import numpy as np
 from tqdm import tqdm
@@ -14,6 +14,8 @@ from simpler_env.utils.env.observation_utils import get_image_from_maniskill2_ob
 from simpler_env.utils.visualization import write_interval_video, write_video
 
 INF_COST = 999
+master_seed = 42
+rng = np.random.RandomState(master_seed)
 
 def run_maniskill2_eval_single_episode(
     model,
@@ -86,7 +88,8 @@ def run_maniskill2_eval_single_episode(
         env_reset_options["obj_init_options"] = {
             "episode_id": obj_episode_id,
         }
-    episode_seed = np.random.randint(0, 100000)
+    # episode_seed = np.random.randint(0, 100000)
+    episode_seed = rng.randint(0, 100000)
 
     obs, _ = env.reset(options=env_reset_options, seed=episode_seed)
     # for long-horizon environments, we check if the current subtask is the final subtask
@@ -204,15 +207,11 @@ def run_maniskill2_eval_single_episode(
     # save json summary
     episode_record = {
         "trial_id": episode_id,
-        **(
-            {"obj_episode": obj_episode_id}
-            if obj_variation_mode in ("episode", "episode_xy")
-            else {"obj_init_xy": [obj_init_x, obj_init_y]}
-        ),
+        **({"obj_episode": obj_episode_id} if obj_variation_mode in ("episode", "episode_xy") else {"obj_init_xy": [obj_init_x, obj_init_y]}),
         "task_description": task_description,
         "episode_stats": subtasks,
-        "final_status": success, 
-        "final_cost_time": final_cost_time
+        "final_status": success,
+        "final_cost_time": final_cost_time,
     }
 
     # Details
@@ -225,9 +224,11 @@ def run_maniskill2_eval_single_episode(
         "robot_init_xy": [float(f"{robot_init_x:.3f}"), float(f"{robot_init_y:.3f}")],
         "robot_init_rpy": [float(f"{r:.3f}"), float(f"{p:.3f}"), float(f"{y:.3f}")],
         "add_info": (
-            (f"{success}_obj_{obj_init_x}_{obj_init_y}") if obj_variation_mode in ("xy", "episode_xy")
+            (f"{success}_obj_{obj_init_x}_{obj_init_y}")
+            if obj_variation_mode in ("xy", "episode_xy")
             else (f"{success}_idx_{episode_id}_obj_episode_{obj_episode_id}")
-        ) + "".join([f"_{k}_{v}" for k, v in episode_stats.items()]),
+        )
+        + "".join([f"_{k}_{v}" for k, v in episode_stats.items()]),
         "additional_env_build_kwargs": additional_env_build_kwargs,
     }
 
@@ -251,8 +252,8 @@ def maniskill2_evaluator(model, args):
 
     if args.robot_variation_mode == "episode_xy":
         for robot_episode_id in range(args.robot_episode_range[0], args.robot_episode_range[1]):
-            robot_init_x = np.random.uniform(args.robot_init_x_range[0], args.robot_init_x_range[1])
-            robot_init_y = np.random.uniform(args.robot_init_y_range[0], args.robot_init_y_range[1])
+            robot_init_x = rng.uniform(args.robot_init_x_range[0], args.robot_init_x_range[1])
+            robot_init_y = rng.uniform(args.robot_init_y_range[0], args.robot_init_y_range[1])
             for robot_init_quat in args.robot_init_quats:
                 success = _run_single_evaluation(model, args, control_mode, robot_init_x, robot_init_y, robot_init_quat)
                 success_arr += success
@@ -294,28 +295,21 @@ def _run_single_evaluation(model, args, control_mode, robot_init_x, robot_init_y
                     **kwargs,
                 )
                 success_arr.append(success)
-
     elif args.obj_variation_mode == "episode":
-        import random
-        sampled_ids = random.choices(range(36), k=args.obj_episode_range[1])
+        sampled_ids = rng.choice(range(36), size=args.obj_episode_range[1], replace=True)
         for idx, obj_episode_id in enumerate(sampled_ids):
-            if "widowx" in args.robot:
-                if "episode_id" in kwargs.keys():
-                    kwargs.pop("episode_id")
-                success = run_maniskill2_eval_single_episode(obj_episode_id=obj_episode_id, episode_id=idx, **kwargs)
-            elif "google_robot" in args.robot:
-                success = run_maniskill2_eval_single_episode(obj_episode_id=obj_episode_id, **kwargs)
-            else:
-                raise NotImplementedError()
+            if kwargs["episode_id"] is None:
+                kwargs["episode_id"] = idx
+            success = run_maniskill2_eval_single_episode(obj_episode_id=obj_episode_id, **kwargs)
             success_arr.append(success)
 
     elif args.obj_variation_mode == "episode_xy":
         for obj_episode_id in range(args.obj_episode_range[0], args.obj_episode_range[1]):
-            obj_init_x = np.random.uniform(args.obj_init_x_range[0], args.obj_init_x_range[1])
-            obj_init_y = np.random.uniform(args.obj_init_y_range[0], args.obj_init_y_range[1])
+            obj_init_x = rng.uniform(args.obj_init_x_range[0], args.obj_init_x_range[1])
+            obj_init_y = rng.uniform(args.obj_init_y_range[0], args.obj_init_y_range[1])
             success = run_maniskill2_eval_single_episode(obj_init_x=obj_init_x, obj_init_y=obj_init_y, **kwargs)
             success_arr.append(success)
-    
+
     else:
         raise NotImplementedError()
 
@@ -333,6 +327,7 @@ def _json_default(o):
         return o.tolist()
     return str(o)
 
+
 def _sanitize_for_json(x):
     if isinstance(x, dict):
         return {k: _sanitize_for_json(v) for k, v in x.items()}
@@ -343,6 +338,7 @@ def _sanitize_for_json(x):
     if isinstance(x, np.generic):
         return x.item()
     return x
+
 
 def _append_episode_to_json(ckpt_logging_dir, task_name, episode_record):
     json_path = os.path.join(ckpt_logging_dir, "results.json")
